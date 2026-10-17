@@ -1,11 +1,13 @@
-kopis_kem
-=========
+kopis-smallcode
+===============
 
-This crate is a pure-Rust, no-std implementation of the Kopis key encapsulation mechanism (KEM). Kopis is a lattice-based KEM that is designed to be secure against classical and quantum adversaries. It comes in three variants:
+This crate is a pure-Rust, no-std implementation of the [Kopis](https://eprint.iacr.org/2026/2268) key encapsulation mechanism (KEM). Kopis is a lattice-based KEM that is designed to be secure against classical and quantum adversaries. Kopis has three security levels: Kopis-512, Kopis-768, and Kopis-1024. If you don't know what to use, just use Kopis-768.
 
-* Kopis-512, which is designed to have security roughly equivalent to AES-128
-* Kopis-768, which is designed to have security roughly equivalent to AES-192
-* Kopis-1024, which is designed to have security roughly equivalent to AES-256
+This crate differs from [kopis-rs](https://github.com/rozbb/kopis-rs) in three ways:
+1. I, a human, wrote nearly every line of this crate, and the ones I did not (really just the Karatsuba multiplication), I scrutinized carefully
+1. The code footprint of this crate is much smaller than `kopis-rs`
+1. This crate is significantly slower than `kopis-rs`, and also slower than any ML-KEM crate
+1. This crate is not formally verified with Lean, while `kopis-rs` is
 
 Warning
 -------
