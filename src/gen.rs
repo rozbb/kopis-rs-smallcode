@@ -2,7 +2,7 @@
 
 use crate::{
     arithmetic::{Matrix, RingElem},
-    consts::{DOMSEP_GENMAT, DOMSEP_GENSEC, MAX_MU, MODULUS_Q_BITS, RING_DEG},
+    consts::{DOMSEP_GENMAT, DOMSEP_GENSEC, MAX_MU},
 };
 
 use turboshake::digest::{ExtendableOutput, Update, XofReader};
@@ -59,8 +59,8 @@ pub(crate) fn gen_secret_from_seed<const L: usize, const MU: usize>(
     let mut secret = Matrix::default();
     // Buffer to hold XOF bytes. Can't do const math here, so we make it the max size
     // and cut it down
-    let mut backing_buf = [0u8; RING_DEG * MAX_MU / 8];
-    let buf = &mut backing_buf[..RING_DEG * MU / 8];
+    let mut backing_buf = [0u8; 256 * MAX_MU / 8];
+    let buf = &mut backing_buf[..256 * MU / 8];
 
     // Sample the secret using the Centered Binomial Distribution
     for (i, row) in secret.0.iter_mut().enumerate() {
@@ -82,7 +82,7 @@ pub(crate) fn gen_matrix_from_seed<const L: usize>(seed: &[u8; 32]) -> Matrix<L,
     // Our output is a matrix of ring elements
     let mut mat = Matrix::default();
     // For each ring element we need to sample the same number of bytes
-    let mut buf = [0u8; RING_DEG * MODULUS_Q_BITS / 8];
+    let mut buf = [0u8; 256 * 13 / 8];
 
     // Construct the matrix entries
     for (i, row) in mat.0.iter_mut().enumerate() {
@@ -93,7 +93,7 @@ pub(crate) fn gen_matrix_from_seed<const L: usize>(seed: &[u8; 32]) -> Matrix<L,
             hasher.update(&[j as u8]);
             let mut reader = hasher.finalize_xof();
             reader.read(&mut buf);
-            *p = RingElem::from_bytes(&buf, MODULUS_Q_BITS);
+            *p = RingElem::from_bytes(&buf, 13);
         }
     }
 

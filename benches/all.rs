@@ -1,4 +1,4 @@
-use kopis_kem::{
+use kopis_smallcode::{
     kopis1024::Kopis1024SecretKey, kopis512::Kopis512SecretKey, kopis768::Kopis768SecretKey,
 };
 

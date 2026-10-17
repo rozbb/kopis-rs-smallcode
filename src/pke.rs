@@ -2,9 +2,7 @@
 
 use crate::{
     arithmetic::{Matrix, RingElem},
-    consts::{
-        DOMSEP_KGEXPAND, DOMSEP_PKHASH, MAX_L, MAX_T, MODULUS_P_BITS, MODULUS_Q_BITS, RING_DEG,
-    },
+    consts::{DOMSEP_KGEXPAND, DOMSEP_PKHASH, MAX_L, MAX_T},
     gen::{gen_matrix_from_seed, gen_secret_from_seed},
     ser::deserialize,
     turboshake256_hash,
@@ -12,8 +10,6 @@ use crate::{
 
 use turboshake::digest::{ExtendableOutput, Update, XofReader};
 use turboshake::CTurboShake256;
-
-const H1_VAL: u16 = 1 << (MODULUS_Q_BITS - MODULUS_P_BITS - 1);
 
 /// A secret key for the IND-CPA-secure Kopis PKE scheme (expanded form)
 pub(crate) struct PkeSecretKey<const L: usize>(Matrix<L, 1>);
@@ -26,7 +22,7 @@ pub struct PkePublicKey<const L: usize> {
 }
 
 impl<const L: usize> PkePublicKey<L> {
-    pub const SERIALIZED_LEN: usize = 32 + L * MODULUS_P_BITS * RING_DEG / 8;
+    pub const SERIALIZED_LEN: usize = 256 * L * 10 / 8 + 32;
 
     /// Serializes this public key to a byte string. `out_buf` MUST have length SERIALIZED_LEN
     pub(crate) fn serialize(&self, out_buf: &mut [u8]) {
@@ -34,8 +30,7 @@ impl<const L: usize> PkePublicKey<L> {
         assert_eq!(out_buf.len(), out_size);
 
         // Write out the LWR sample, then the seed
-        self.vec
-            .serialize(&mut out_buf[..out_size - 32], MODULUS_P_BITS);
+        self.vec.serialize(&mut out_buf[..out_size - 32], 10);
         // Write out the pubkey seed
         out_buf[out_size - 32..].copy_from_slice(&self.matrix_seed);
     }
@@ -44,7 +39,7 @@ impl<const L: usize> PkePublicKey<L> {
         assert_eq!(bytes.len(), Self::SERIALIZED_LEN);
 
         let (vec_bytes, seed) = bytes.split_at(Self::SERIALIZED_LEN - 32);
-        let vec = Matrix::from_bytes(vec_bytes, MODULUS_P_BITS);
+        let vec = Matrix::from_bytes(vec_bytes, 10);
         Self {
             matrix_seed: seed.try_into().expect("split_at(N-32).1 has len 32"),
             vec,
@@ -63,21 +58,19 @@ impl<const L: usize> PkePublicKey<L> {
 
 /// The maximum length of a serialized public key, for all parameter choices
 pub(crate) const fn max_pke_pubkey_serialized_len() -> usize {
-    32 + MAX_L * MODULUS_P_BITS * RING_DEG / 8
-}
-
-/// The maximum length of a ciphertext (PKE or KEM, since they're the same), for all parameter
-/// choices, for a message that is 32-bytes.
-pub const fn max_ciphertext_len() -> usize {
-    // b' is in R^l_P and c is in R_T
-    MAX_T * RING_DEG / 8 + MAX_L * MODULUS_P_BITS * RING_DEG / 8
+    256 * MAX_L * 10 / 8 + 32
 }
 
 /// The length of a ciphertext (PKE or KEM, since they're the same) for a given parameter choice,
 /// for a message that is 32-bytes.
 pub const fn ciphertext_len<const L: usize, const T: usize>() -> usize {
-    // b' is in R^l_P and c is in R_T
-    L * MODULUS_P_BITS * RING_DEG / 8 + T * RING_DEG / 8
+    256 * T / 8 + 256 * L * 10 / 8
+}
+
+/// The maximum length of a ciphertext (PKE or KEM, since they're the same), for all parameter
+/// choices, for a message that is 32-bytes.
+pub const fn max_ciphertext_len() -> usize {
+    ciphertext_len::<MAX_L, MAX_T>()
 }
 
 /// Expands a 32-byte secret key into the full decapsulation key components.
@@ -108,11 +101,11 @@ pub(crate) fn expand_decap_key<const L: usize, const MU: usize>(
     let mat_a = gen_matrix_from_seed::<L>(&mat_seed);
     let vec_s = gen_secret_from_seed::<L, MU>(&secret_seed);
 
-    // vec_b = RoundToR10(transpose(mat_A) * vec_s)
+    // vec_b = CompressToR10(transpose(mat_A) * vec_s)
     let b = {
         let mut prod = mat_a.mul_transpose(&vec_s);
-        prod.wrapping_add_to_all(H1_VAL);
-        prod.shift_right(MODULUS_Q_BITS - MODULUS_P_BITS);
+        prod.wrapping_add_to_all(4);
+        prod.shift_right(3);
         prod
     };
 
@@ -132,23 +125,16 @@ pub(crate) fn decrypt<const L: usize, const T: usize>(
     ciphertext: &[u8],
 ) -> [u8; 32] {
     assert_eq!(ciphertext.len(), ciphertext_len::<L, T>());
-    // b' is in R^l_P and c is in R_T
-    let (bprime_bytes, c_bytes) = ciphertext.split_at(L * MODULUS_P_BITS * RING_DEG / 8);
+    let (bprime_bytes, c_bytes) = ciphertext.split_at(256 * L * 10 / 8);
 
-    let bprime: Matrix<L, 1> = Matrix::from_bytes(bprime_bytes, MODULUS_P_BITS);
+    let vec_bprime: Matrix<L, 1> = Matrix::from_bytes(bprime_bytes, 10);
+    let v = vec_bprime.mul_transpose(&sk.0).0[0][0];
 
-    let mut c = RingElem::from_bytes(c_bytes, T);
-    c.shift_left(MODULUS_P_BITS - T);
+    let mut cm = RingElem::from_bytes(c_bytes, T);
+    cm.shift_left(10 - T);
+    let cm10 = cm;
 
-    let v = bprime.mul_transpose(&sk.0);
-    let v = v.0[0][0];
-
-    // Compute v - c + h₂
-    let mut mprime = &v - &c;
-    let h2_val = (1 << (MODULUS_P_BITS - 2)) - (1 << (MODULUS_P_BITS - T - 1))
-        + (1 << (MODULUS_Q_BITS - MODULUS_P_BITS - 1));
-    mprime.wrapping_add_to_all(h2_val);
-    mprime.shift_right(MODULUS_P_BITS - 1);
+    let mprime = decode_msg::<T>(&v - &cm10);
 
     let mut m = [0u8; 32];
     mprime.serialize(&mut m, 1);
@@ -168,28 +154,41 @@ pub(crate) fn encrypt_deterministic<const L: usize, const MU: usize, const T: us
     let mat_a = gen_matrix_from_seed::<L>(&pk.matrix_seed);
     let vec_sprime = gen_secret_from_seed::<L, MU>(coins);
 
-    let bprime = {
-        let mut prod = mat_a.mul(&vec_sprime);
-        prod.wrapping_add_to_all(H1_VAL);
-        prod.shift_right(MODULUS_Q_BITS - MODULUS_P_BITS);
-        prod
-    };
+    let bprime = compress_to_r10(mat_a.mul(&vec_sprime));
 
     let vprime: Matrix<1, 1> = pk.vec.mul_transpose(&vec_sprime);
     let vprime = vprime.0[0][0];
 
     let mut msg_polyn = RingElem(deserialize(msg, 1));
-    msg_polyn.shift_left(MODULUS_P_BITS - 1);
+    msg_polyn.shift_left(9);
 
-    // Compute v' - mp + h₁
-    let mut c = &vprime - &msg_polyn;
-    c.wrapping_add_to_all(H1_VAL);
-    c.shift_right(MODULUS_P_BITS - T);
+    let ct = compress_to_rt::<T>(&vprime - &msg_polyn);
 
-    // b' is in R^l_P and c is in R_T
-    let (bprime_buf, c_buf) = out_buf.split_at_mut(L * MODULUS_P_BITS * RING_DEG / 8);
-    bprime.serialize(bprime_buf, MODULUS_P_BITS);
-    c.serialize(c_buf, T);
+    let (bprime_buf, c_buf) = out_buf.split_at_mut(256 * L * 10 / 8);
+    bprime.serialize(bprime_buf, 10);
+    ct.serialize(c_buf, T);
+}
+
+#[inline(always)]
+fn compress_to_rt<const T: usize>(mut r: RingElem) -> RingElem {
+    r.wrapping_add_to_all(4);
+    r.shift_right(10 - T);
+    r
+}
+
+#[inline(always)]
+fn compress_to_r10<const L: usize>(mut v: Matrix<L, 1>) -> Matrix<L, 1> {
+    v.wrapping_add_to_all(4);
+    v.shift_right(3);
+    v
+}
+
+#[inline(always)]
+fn decode_msg<const T: usize>(mut r: RingElem) -> RingElem {
+    let h2_val = (1 << 8) - (1 << (10 - T - 1)) + 4;
+    r.wrapping_add_to_all(h2_val);
+    r.shift_right(9);
+    r
 }
 
 #[cfg(test)]
@@ -210,7 +209,7 @@ mod test {
     // Helper function that encrypts and decrypts a random 32-byte message
     fn test_enc_dec<const L: usize, const T: usize, const MU: usize>() {
         let mut rng = rand::rng();
-        let mut backing_buf = [0u8; MAX_T * RING_DEG / 8 + MAX_L * MODULUS_P_BITS * RING_DEG / 8];
+        let mut backing_buf = [0u8; MAX_T * 256 / 8 + MAX_L * 10 * 256 / 8];
 
         for _ in 0..100 {
             // Generate a random secret key seed and expand it
@@ -222,7 +221,7 @@ mod test {
             let mut msg = [0u8; 32];
             rng.fill_bytes(&mut enc_seed);
             rng.fill_bytes(&mut msg);
-            let ct_buf = &mut backing_buf[..T * RING_DEG / 8 + L * MODULUS_P_BITS * RING_DEG / 8];
+            let ct_buf = &mut backing_buf[..ciphertext_len::<L, T>()];
 
             encrypt_deterministic::<L, MU, T>(&pk, &msg, &enc_seed, ct_buf);
             let recovered_msg = decrypt::<L, T>(&sk, ct_buf);

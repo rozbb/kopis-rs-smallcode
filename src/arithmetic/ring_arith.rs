@@ -1,12 +1,11 @@
 //! This file defines and implements Saber ring elements, specifically ℤ[X]/(X^256 + 1) mod n where
 //! n can be any power of two at most 2^16
 
-use crate::{
-    consts::RING_DEG,
-    ser::{deserialize, serialize},
-};
+use crate::ser::{deserialize, serialize};
 
 use core::ops::{Add, Mul, Sub};
+
+const RING_DEG: usize = 256;
 
 /// An element of the ring (Z/2^13 Z)[X] / (X^256 + 1)
 // The coefficients are in order of ascending powers, i.e., `self.0[0]` is the constant term
@@ -23,7 +22,7 @@ impl RingElem {
     /// Creates a random ring element
     #[cfg(test)]
     pub(crate) fn rand(rng: &mut impl rand_core::CryptoRng) -> Self {
-        let modulus = 1 << crate::consts::MODULUS_Q_BITS as u32;
+        let modulus = 1 << 13 as u32;
 
         let mut result = [0; RING_DEG];
         result.iter_mut().for_each(|coeff| {
@@ -201,7 +200,6 @@ impl<'a> Sub for &'a RingElem {
 #[cfg(test)]
 mod test {
     use super::*;
-    use crate::consts::RING_DEG;
 
     use rand::{rng, Rng, RngCore};
 

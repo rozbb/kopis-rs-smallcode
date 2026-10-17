@@ -1,6 +1,5 @@
 //! Serialization and deserialization routines for ring elements
 
-// Algorithm 9, BS2POLN
 /// Deserializes the given bitstring into a u16 array. Every element of the array has
 /// `bits_per_elem` bits (must be ≤ 13), encoded in the lower bits of the word.
 pub(crate) fn deserialize<const N: usize>(bytes: &[u8], bits_per_elem: usize) -> [u16; N] {
@@ -34,7 +33,6 @@ pub(crate) fn deserialize<const N: usize>(bytes: &[u8], bits_per_elem: usize) ->
     out
 }
 
-// Algorithm 10, POLN2BS
 /// Serializes the given u16 array into a bitstring. Every element of the array has `bits_per_elem`
 /// bits (must be ≤ 13), encoded in the lower bits of the word.
 pub(crate) fn serialize(data: &[u16], out_buf: &mut [u8], bits_per_elem: usize) {

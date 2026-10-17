@@ -1,10 +1,3 @@
-/// The bitlength of the modulus q = 2^13
-pub(crate) const MODULUS_Q_BITS: usize = 13;
-/// The bitlength of the modulus p = 2^10
-pub(crate) const MODULUS_P_BITS: usize = 10;
-/// The degree of the polynomial ring over Z/qZ
-pub(crate) const RING_DEG: usize = 256;
-
 // Key for the following constants:
 //   * L is the dimension of the vectors/matrices we use.
 //     E.g., a secret in Kopis-512 is an element of R_q^2

@@ -18,7 +18,7 @@ Example code
 The following code can be found in [`examples/simple.rs`](examples/simple.rs).
 
 ```rust
-use kopis_kem::{
+use kopis_smallcode::{
     kopis512::{Kopis512Ciphertext, Kopis512PublicKey, Kopis512SecretKey, KOPIS512_CIPHERTEXT_LEN},
     SharedSecret
 };

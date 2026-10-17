@@ -1,9 +1,6 @@
 //! This file defines and implements matrices over our ring
 
-use crate::{
-    arithmetic::{ring_arith::ring_mul_acc, RingElem},
-    consts::RING_DEG,
-};
+use crate::arithmetic::{ring_arith::ring_mul_acc, RingElem};
 
 /// An element of R^{x×y} where R is a [`RingElem`], stored in row-major order
 // We store the matrix in row-major order, so the outer array is the number of rows, i.e., the
@@ -93,9 +90,9 @@ impl<const X: usize, const Y: usize> Matrix<X, Y> {
     /// coefficient as having only `bits_per_elem` bits. In Saber terms, this runs POLYVECk2BS
     /// where k = bits_per_elem
     pub(crate) fn serialize(&self, out_buf: &mut [u8], bits_per_elem: usize) {
-        assert_eq!(out_buf.len(), X * Y * bits_per_elem * RING_DEG / 8);
+        assert_eq!(out_buf.len(), X * Y * bits_per_elem * 256 / 8);
 
-        let mut chunk_iter = out_buf.chunks_mut(bits_per_elem * RING_DEG / 8);
+        let mut chunk_iter = out_buf.chunks_mut(bits_per_elem * 256 / 8);
         for row in self.0.iter() {
             for entry in row.iter() {
                 let out_chunk = chunk_iter
@@ -110,10 +107,10 @@ impl<const X: usize, const Y: usize> Matrix<X, Y> {
     /// as having only `bits_per_elem` bits. In Saber terms, this runs BS2POLYVECk where k =
     /// bits_per_elem
     pub(crate) fn from_bytes(bytes: &[u8], bits_per_elem: usize) -> Self {
-        assert_eq!(bytes.len(), X * Y * bits_per_elem * RING_DEG / 8);
+        assert_eq!(bytes.len(), X * Y * bits_per_elem * 256 / 8);
         let mut result = Matrix::default();
 
-        let mut chunk_iter = bytes.chunks(bits_per_elem * RING_DEG / 8);
+        let mut chunk_iter = bytes.chunks(bits_per_elem * 256 / 8);
         for row in result.0.iter_mut() {
             for entry in row.iter_mut() {
                 let chunk = chunk_iter
