@@ -2,7 +2,9 @@
 
 use crate::{
     consts::{DOMSEP_FO, DOMSEP_NOREJECT},
-    pke::{self, ciphertext_len, expand_decap_key, max_ciphertext_len, PkePublicKey, PkeSecretKey},
+    pke::{
+        self, ciphertext_len, expand_secret_key, max_ciphertext_len, PkePublicKey, PkeSecretKey,
+    },
     turboshake256_hash,
 };
 
@@ -62,7 +64,7 @@ pub struct KemSecretKey<const L: usize> {
 impl<const L: usize> KemSecretKey<L> {
     /// Construct a secret key from a 32-byte seed by expanding it via `ExpandDecapKey`.
     pub fn expand_from_seed<const MU: usize>(seed: &[u8; 32]) -> KemSecretKey<L> {
-        let (pke_sk, z, pke_pk, hash_pke_pk) = expand_decap_key::<L, MU>(seed);
+        let (pke_sk, z, pke_pk, hash_pke_pk) = expand_secret_key::<L, MU>(seed);
 
         KemSecretKey {
             seed: *seed,
@@ -95,15 +97,27 @@ impl<const L: usize> KemSecretKey<L> {
 
 /// Encapsulate a shared secret to the given public key using the given `randomness`.
 /// Returns the shared secret. `out_buf` MUST have length `ciphertext_len::<L, T>()`.
+// From the spec:
+// fn KemEncap(
+//   randomness: [u8; 32],
+//   pk: [u8; PK_SIZE]
+// ) -> ([u8; 32], [u8; CT_SIZE]):
+//   # Derive the output key and encryption randomness
+//   let pkh = TurboSHAKE256(pk, 32, DOMSEP_PKHASH)
+//   let b = TurboSHAKE256(randomness || pkh, 64, DOMSEP_FO)
+//   let (k, r) = (b[..32], b[32..])
+//
+//   # Encrypt to pk. `randomness` is itself the message
+//   let ct = PkeEncrypt(r, pk, randomness)
+//
+//   return (k, ct)
 pub(crate) fn encap_deterministic<const L: usize, const MU: usize, const T: usize>(
     randomness: &[u8; 32],
     kem_pk: &KemPublicKey<L>,
     out_buf: &mut [u8],
 ) -> SharedSecret {
-    let KemPublicKey {
-        pke_pk,
-        hash_pke_pk,
-    } = kem_pk;
+    let pkh = &kem_pk.hash_pke_pk;
+    let pk = &kem_pk.pke_pk;
 
     // k || r = TurboSHAKE256()
     let mut k = [0u8; 32];
@@ -112,14 +126,13 @@ pub(crate) fn encap_deterministic<const L: usize, const MU: usize, const T: usiz
     let mut xof = {
         let mut hasher = CTurboShake256::<DOMSEP_FO>::default();
         hasher.update(randomness);
-        hasher.update(hash_pke_pk);
+        hasher.update(pkh);
         hasher.finalize_xof()
     };
     xof.read(&mut k);
     xof.read(&mut r);
 
-    // c = PkeEncrypt(r, pk, randomness)
-    pke::encrypt_deterministic::<L, MU, T>(pke_pk, randomness, &r, out_buf);
+    pke::encrypt_deterministic::<L, MU, T>(&r, pk, randomness, out_buf);
 
     k
 }
@@ -127,39 +140,51 @@ pub(crate) fn encap_deterministic<const L: usize, const MU: usize, const T: usiz
 /// Decapsulates a shared secret from the given ciphertext and secret key.
 /// Returns the shared secret or a pseudorandom value if the ciphertext is invalid.
 /// `ciphertext` MUST have length `ciphertext_len::<L, T>()`.
+// From the spec:
+// fn KemDecap(sk: [u8; 32], ct: [u8; CT_SIZE]) -> [u8; 32]:
+//   let (_, z, pk, pkh) = ExpandSecretKey(sk)
+//
+//   let randomness = PkeDecrypt(sk, ct)
+//   let b = TurboSHAKE256(randomness || pkh, 64, DOMSEP_FO)
+//   let (k, rprime) = (b[..32], b[32..])
+//   let cprime = PkeEncrypt(rprime, pk, randomness)
+//
+//   if ct == cprime:
+//     return k
+//   else:
+//     return TurboSHAKE256(z || ct, 32, DOMSEP_NOREJECT)
 pub fn decap<const L: usize, const MU: usize, const T: usize>(
     sk: &KemSecretKey<L>,
-    ciphertext: &[u8],
+    ct: &[u8],
 ) -> SharedSecret {
-    assert_eq!(ciphertext.len(), ciphertext_len::<L, T>());
+    assert_eq!(ct.len(), ciphertext_len::<L, T>());
 
-    // randomness = PkeDecrypt(sk, c)
-    let randomness = pke::decrypt::<L, T>(&sk.pke_sk, ciphertext);
+    let z = &sk.z;
+    let pk = &sk.pke_pk;
+    let pkh = &sk.hash_pke_pk;
 
-    // k || rprime = TurboSHAKE256()
+    let randomness = pke::decrypt::<L, T>(&sk.pke_sk, ct);
+
     let mut k = [0u8; 32];
     let mut rprime = [0u8; 32];
 
     let mut xof = {
         let mut hasher = CTurboShake256::<DOMSEP_FO>::default();
         hasher.update(&randomness);
-        hasher.update(&sk.hash_pke_pk);
+        hasher.update(pkh);
         hasher.finalize_xof()
     };
     xof.read(&mut k);
     xof.read(&mut rprime);
 
-    // cprime = PkeEncrypt(rprime, pk, randomness)
     let mut buf = [0u8; max_ciphertext_len()];
-    let reconstructed_ct = &mut buf[..ciphertext_len::<L, T>()];
-    pke::encrypt_deterministic::<L, MU, T>(&sk.pke_pk, &randomness, &rprime, reconstructed_ct);
+    let cprime = &mut buf[..ciphertext_len::<L, T>()];
+    pke::encrypt_deterministic::<L, MU, T>(&rprime, pk, &randomness, cprime);
 
-    // Compute rejection value: TurboSHAKE256(z || c, 32, DOMSEP_NOREJECT)
-    let reject_val = turboshake256_hash::<DOMSEP_NOREJECT>(&[&sk.z, ciphertext]);
+    let reject_val = turboshake256_hash::<DOMSEP_NOREJECT>(&[z, ct]);
 
-    // Constant-time select: return k if c == cprime, else return reject_val
-    let reconstruction_matched = reconstructed_ct.ct_eq(ciphertext);
-    <[u8; 32]>::conditional_select(&reject_val, &k, reconstruction_matched)
+    let ct_matched = cprime.ct_eq(ct);
+    <[u8; 32]>::conditional_select(&reject_val, &k, ct_matched)
 }
 
 #[cfg(test)]

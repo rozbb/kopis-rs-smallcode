@@ -14,6 +14,13 @@ impl<const X: usize, const Y: usize> Default for Matrix<X, Y> {
     }
 }
 
+// Unwraps a singleton matrix into its only element
+impl Into<RingElem> for Matrix<1, 1> {
+    fn into(self) -> RingElem {
+        self.0[0][0]
+    }
+}
+
 impl<const X: usize, const Y: usize> Matrix<X, Y> {
     #[cfg(test)]
     pub fn rand(rng: &mut impl rand_core::CryptoRng) -> Self {

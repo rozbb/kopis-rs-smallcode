@@ -47,8 +47,9 @@ impl<const L: usize> PkePublicKey<L> {
     }
 
     /// Returns the public key hash
+    // From the spec:
+    // let pkh = TurboSHAKE256(pk, 32, DOMSEP_PKHASH)
     pub(crate) fn hash(&self) -> [u8; 32] {
-        // pkh = TurboSHAKE256(pk, 32, DOMSEP_PKHASH)
         let mut buf = [0u8; max_pke_pubkey_serialized_len()];
         let pk_slice = &mut buf[..PkePublicKey::<L>::SERIALIZED_LEN];
         self.serialize(pk_slice);
@@ -80,7 +81,23 @@ pub const fn max_ciphertext_len() -> usize {
 /// - z is 32 bytes used for rejection in decapsulation
 /// - pk is the public key
 /// - pkh is the hash of the public key
-pub(crate) fn expand_decap_key<const L: usize, const MU: usize>(
+// From the spec:
+// fn ExpandSecretKey(
+//   sk: [u8; 32]
+// ) -> (VecR13, [u8; 32], [u8; PK_SIZE], [u8; 32]):
+//   let randomness = TurboSHAKE256(sk || (ℓ as u8), 96, DOMSEP_KGEXPAND)
+//   let mat_seed = randomness[..32]
+//   let secret_seed = randomness[32..64]
+//   let z = randomness[64..]
+//
+//   let mat_A = GenMat(mat_seed)
+//   let vec_s = GenSecret(secret_seed)
+//   let vec_b = CompressToR10(transpose(mat_A) * vec_s)
+//   let pk = serialize_vec(10, vec_b) || mat_seed
+//   let pkh = TurboSHAKE256(pk, 32, DOMSEP_PKHASH)
+//
+//   return (vec_s, z, pk, pkh)
+pub(crate) fn expand_secret_key<const L: usize, const MU: usize>(
     sk: &[u8; 32],
 ) -> (PkeSecretKey<L>, [u8; 32], PkePublicKey<L>, [u8; 32]) {
     // mat_seed || secret_seed || r = TurboSHAKE256(sk || L, 96, DOMSEP_KGEXPAND)
@@ -101,8 +118,7 @@ pub(crate) fn expand_decap_key<const L: usize, const MU: usize>(
     let mat_a = gen_matrix_from_seed::<L>(&mat_seed);
     let vec_s = gen_secret_from_seed::<L, MU>(&secret_seed);
 
-    // vec_b = CompressToR10(transpose(mat_A) * vec_s)
-    let b = {
+    let vec_b = {
         let mut prod = mat_a.mul_transpose(&vec_s);
         prod.wrapping_add_to_all(4);
         prod.shift_right(3);
@@ -111,7 +127,7 @@ pub(crate) fn expand_decap_key<const L: usize, const MU: usize>(
 
     let pk = PkePublicKey {
         matrix_seed: mat_seed,
-        vec: b,
+        vec: vec_b,
     };
     let pkh = pk.hash();
 
@@ -120,17 +136,24 @@ pub(crate) fn expand_decap_key<const L: usize, const MU: usize>(
 
 /// Decrypts a ciphertext using the given secret key. `ciphertext` MUST have length
 /// `ciphertext_len::<L, T>()`.
-pub(crate) fn decrypt<const L: usize, const T: usize>(
-    sk: &PkeSecretKey<L>,
-    ciphertext: &[u8],
-) -> [u8; 32] {
-    assert_eq!(ciphertext.len(), ciphertext_len::<L, T>());
-    let (bprime_bytes, c_bytes) = ciphertext.split_at(256 * L * 10 / 8);
+// From the spec:
+// fn PkeDecrypt(sk: [u8; 32], ct: [u8; CT_SIZE]) -> [u8; 32]:
+//   let (vec_s, ...) = ExpandSecretKey(sk)
+//   let vec_bprime = deserialize_vec(10, ct[..256*ℓ*10/8])
+//   let cm = deserialize_elem(t, ct[256*ℓ*10/8..])
+//   let v = transpose(vec_bprime) * (vec_s as VecR10)
+//   let cm10 = (cm as R10) << (10 - t)
+//   let mprime = DecodeMsg(v - cm10)
+//   return serialize_elem(1, mprime)
+pub(crate) fn decrypt<const L: usize, const T: usize>(sk: &PkeSecretKey<L>, ct: &[u8]) -> [u8; 32] {
+    assert_eq!(ct.len(), ciphertext_len::<L, T>());
+    let (bprime_bytes, cm_bytes) = ct.split_at(256 * L * 10 / 8);
 
+    let vec_s = &sk.0;
     let vec_bprime: Matrix<L, 1> = Matrix::from_bytes(bprime_bytes, 10);
-    let v = vec_bprime.mul_transpose(&sk.0).0[0][0];
+    let mut cm = RingElem::from_bytes(cm_bytes, T);
+    let v = vec_bprime.mul_transpose(vec_s).into();
 
-    let mut cm = RingElem::from_bytes(c_bytes, T);
     cm.shift_left(10 - T);
     let cm10 = cm;
 
@@ -143,32 +166,55 @@ pub(crate) fn decrypt<const L: usize, const T: usize>(
 
 /// Encrypts a message with a given public key and randomness (`coins`).
 /// `out_buf` MUST have length `ciphertext_len::<L, T>()`.
+// From the spec:
+// fn PkeEncrypt(
+//   randomness: [u8; 32],
+//   pk: [u8; PK_SIZE],
+//   msg: [u8; 32]
+// ) -> [u8; CT_SIZE]:
+//   let vec_b = deserialize_vec(10, pk[..256*ℓ*10/8])
+//   let mat_seed = pk[256*ℓ*10/8..]
+//   let m = deserialize_elem(1, msg)
+//
+//   let mat_A = GenMat(mat_seed)
+//   let vec_sprime = GenSecret(randomness)
+//   let vec_bprime = CompressToR10(mat_A * vec_sprime)
+//   let vprime = transpose(vec_b) * (vec_sprime as VecR10)
+//   let cm = CompressToRt(vprime - ((m as R10) << 9))
+//
+//   let ct = serialize_vec(10, vec_bprime) || serialize_elem(t, cm)
+//   return ct
 pub(crate) fn encrypt_deterministic<const L: usize, const MU: usize, const T: usize>(
+    randomness: &[u8; 32],
     pk: &PkePublicKey<L>,
     msg: &[u8; 32],
-    coins: &[u8; 32],
     out_buf: &mut [u8],
 ) {
     assert_eq!(out_buf.len(), ciphertext_len::<L, T>());
 
-    let mat_a = gen_matrix_from_seed::<L>(&pk.matrix_seed);
-    let vec_sprime = gen_secret_from_seed::<L, MU>(coins);
+    let vec_b = &pk.vec;
+    let mat_seed = &pk.matrix_seed;
+    let mut m = RingElem(deserialize(msg, 1));
 
-    let bprime = compress_to_r10(mat_a.mul(&vec_sprime));
+    let mat_a = gen_matrix_from_seed::<L>(&mat_seed);
+    let vec_sprime = gen_secret_from_seed::<L, MU>(randomness);
+    let vec_bprime = compress_to_r10(mat_a.mul(&vec_sprime));
+    let vprime = vec_b.mul_transpose(&vec_sprime).into();
 
-    let vprime: Matrix<1, 1> = pk.vec.mul_transpose(&vec_sprime);
-    let vprime = vprime.0[0][0];
+    m.shift_left(9);
+    let cm = compress_to_rt::<T>(&vprime - &m);
 
-    let mut msg_polyn = RingElem(deserialize(msg, 1));
-    msg_polyn.shift_left(9);
-
-    let ct = compress_to_rt::<T>(&vprime - &msg_polyn);
-
-    let (bprime_buf, c_buf) = out_buf.split_at_mut(256 * L * 10 / 8);
-    bprime.serialize(bprime_buf, 10);
-    ct.serialize(c_buf, T);
+    let (bprime_buf, cm_buf) = out_buf.split_at_mut(256 * L * 10 / 8);
+    vec_bprime.serialize(bprime_buf, 10);
+    cm.serialize(cm_buf, T);
 }
 
+// From the spec:
+// fn CompressToR10(v: VecR13) -> VecR10:
+//   let h1 = make_r13([4u13; 256])
+//   let h = make_vec13([h1; ℓ])
+//   let s = (v + h) >> 3
+//   return (s as VecR10)
 #[inline(always)]
 fn compress_to_rt<const T: usize>(mut r: RingElem) -> RingElem {
     r.wrapping_add_to_all(4);
@@ -176,6 +222,11 @@ fn compress_to_rt<const T: usize>(mut r: RingElem) -> RingElem {
     r
 }
 
+// From the spec:
+// fn CompressToRt(r: R10) -> Rt:
+//   let h1 = make_r10([4u10; 256])
+//   let s = (r + h1) >> (10 - t)
+//   return (s as Rt)
 #[inline(always)]
 fn compress_to_r10<const L: usize>(mut v: Matrix<L, 1>) -> Matrix<L, 1> {
     v.wrapping_add_to_all(4);
@@ -183,6 +234,11 @@ fn compress_to_r10<const L: usize>(mut v: Matrix<L, 1>) -> Matrix<L, 1> {
     v
 }
 
+// From the spec:
+// fn DecodeMsg(r: R10) -> R1:
+//   let h2 = make_r10([2^8 - 2^(10-t-1) + 4; 256])
+//   let s = (r + h2) >> 9
+//   return (s as R1)
 #[inline(always)]
 fn decode_msg<const T: usize>(mut r: RingElem) -> RingElem {
     let h2_val = (1 << 8) - (1 << (10 - T - 1)) + 4;
@@ -215,7 +271,7 @@ mod test {
             // Generate a random secret key seed and expand it
             let mut sk_seed = [0u8; 32];
             rng.fill_bytes(&mut sk_seed);
-            let (sk, _, pk, _) = expand_decap_key::<L, MU>(&sk_seed);
+            let (sk, _, pk, _) = expand_secret_key::<L, MU>(&sk_seed);
 
             let mut enc_seed = [0u8; 32];
             let mut msg = [0u8; 32];
@@ -223,7 +279,7 @@ mod test {
             rng.fill_bytes(&mut msg);
             let ct_buf = &mut backing_buf[..ciphertext_len::<L, T>()];
 
-            encrypt_deterministic::<L, MU, T>(&pk, &msg, &enc_seed, ct_buf);
+            encrypt_deterministic::<L, MU, T>(&enc_seed, &pk, &msg, ct_buf);
             let recovered_msg = decrypt::<L, T>(&sk, ct_buf);
             assert_eq!(msg, recovered_msg);
         }
