@@ -15,9 +15,9 @@ impl<const X: usize, const Y: usize> Default for Matrix<X, Y> {
 }
 
 // Unwraps a singleton matrix into its only element
-impl Into<RingElem> for Matrix<1, 1> {
-    fn into(self) -> RingElem {
-        self.0[0][0]
+impl From<Matrix<1, 1>> for RingElem {
+    fn from(mat: Matrix<1, 1>) -> RingElem {
+        mat.0[0][0]
     }
 }
 

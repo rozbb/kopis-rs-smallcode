@@ -196,7 +196,7 @@ pub(crate) fn encrypt_deterministic<const L: usize, const MU: usize, const T: us
     let mat_seed = &pk.matrix_seed;
     let mut m = RingElem(deserialize(msg, 1));
 
-    let mat_a = gen_matrix_from_seed::<L>(&mat_seed);
+    let mat_a = gen_matrix_from_seed::<L>(mat_seed);
     let vec_sprime = gen_secret_from_seed::<L, MU>(randomness);
     let vec_bprime = compress_to_r10(mat_a.mul(&vec_sprime));
     let vprime = vec_b.mul_transpose(&vec_sprime).into();
